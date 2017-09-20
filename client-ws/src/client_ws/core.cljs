@@ -45,7 +45,7 @@
     (set! (.-innerHTML elt) (:text new-props))))
 
 (defn perform-updates! [updates]
-  (prn updates)
+  #_(prn updates)
   (doseq [update updates]
     (perform-update! update)))
 
@@ -62,9 +62,11 @@
 
 (defn -main []
   (go
+    (js/performance.mark "fuck-start")
     (when-let [ws-chan (:ws-channel (<! (ws-ch "ws://localhost:8000/ws" {:format :transit-json})))]
       (.addEventListener (js/document.getElementById "root")
                          "click" (fn [e]
+                                   (js/performance.mark "fuck-start")
                                    (let [target (.-target e)
                                          handlers (get @callbacks :on-click)]
                                      (when (seq handlers)
@@ -72,7 +74,9 @@
                                          (put! ws-chan [:on-click elt-id]))))))
       (go-loop []
         (when-let [m (:message (<! ws-chan))]
-          (perform-updates! m))
+          (perform-updates! m)
+          (js/performance.mark "fuck-end")
+          (js/performance.measure "fuck" "fuck-start" "fuck-end"))
         (recur)))))
 
 (defonce init

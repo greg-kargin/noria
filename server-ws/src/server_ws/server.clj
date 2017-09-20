@@ -108,13 +108,26 @@
                     {:upstream? true})
     (run-event-loop endpoint)))
 
+(defn start-server []
+  (http/start-server #'connect-handler {:port port
+                                         :netty {"child.reuseAddress" true,
+                                                 "reuseAddress" true,
+                                                 "child.keepAlive" true,
+                                                 "child.connectTimeoutMillis" 100,
+                                                 "tcpNoDelay" true,
+                                                 "readWriteFair" true,
+                                                 "child.tcpNoDelay" true}}))
+
 (defn -main [& args]
   (println (str "server-started: " port))
   (netty/wait-for-close
-   (http/start-server #'connect-handler {:port port})))
+   (start-server)))
 
 (comment
 
+  (.setOption server "tcpNoDelay" true)
+
+  (start-server)
   (.close server)
 
   (def server (http/start-server #'connect-handler {:port 8000}))
