@@ -4,9 +4,9 @@
             [manifold.stream :as stream]
             [manifold.deferred :as d]
             [manifold.bus :as bus]
-            [cognitect.transit :as transit]
             [clojure.core.async :as a]
-            [server-ws.noria :as noria])
+            [server-ws.noria :as noria]
+            [clojure.data.json :as json])
   (:import [java.io ByteArrayOutputStream ByteArrayInputStream]
            [java.util Date]
            [io.netty.channel ChannelOption]))
@@ -18,67 +18,75 @@
 
 (defonce endpoints (atom []))
 
-(defn encode
-  ([data] (encode data nil))
-  ([data {:keys [write-handlers rewrite-outgoing]}]
-   (let [out (ByteArrayOutputStream. 4096)
-         writer (transit/writer out :json {:handlers write-handlers})]
-     (transit/write writer (cond-> data
-                             (some? rewrite-outgoing) (rewrite-outgoing)))
-     (.toString out))))
+(defn encode [data]
+  (json/write-str data :key-fn (fn [k]
+                                 (if (some? (namespace k))
+                                   (str (namespace k) "_" (name k))
+                                   (name k)))))
 
-(defn decode
-  ([data] (decode data nil))
-  ([transit-data {:keys [read-handlers rewrite-incoming]}]
-   (let [in (ByteArrayInputStream. (.getBytes transit-data))
-         reader (transit/reader in :json {:handlers read-handlers})]
-     (cond-> (transit/read reader)
-       (some? rewrite-incoming) (rewrite-incoming)))))
+(defn decode [data]
+  (json/read-str data))
+
 
 (defn make-endpoint []
   {:incoming (a/chan bufsize)
    :outgoing (a/chan bufsize)})
 
-(defn make-remote-tk [callbacks {:keys [incoming outgoing]}]
-  (let [x (atom 0)
-        register-callbacks (fn [props node]
-                             (into {}
-                                   (map (fn [[k v]]
-                                          (if (fn? v)
-                                            (do
-                                              (swap! callbacks assoc [k node] v)
-                                              [k :handler])
-                                            [k v]))
-                                        props)))
-        remove-callbacks (fn [props]
-                           (into {}
-                                 (remove (fn [[k v]] (fn? v)) props)))]
+(defn props-diff! [callbacks node old-props new-props]
+  (let [old-props' (into {}
+                         (map
+                          (fn [[k v]]
+                            (if (fn? v)
+                              (do
+                                (swap! callbacks dissoc [k node])
+                                [k :noria-handler])
+                              [k v]))
+                          old-props))
+        new-props' (into {}
+                         (map
+                          (fn [[k v]]
+                            (if (fn? v)
+                              (do
+                                (swap! callbacks assoc [k node] v)
+                                [k :noria-handler])
+                              [k v]))
+                          new-props))
+        all-keys (into #{} (concat (keys old-props') (keys new-props')))]
+    (into {} (keep (fn [k]
+                     (let [new-val (get new-props' k)
+                           old-val (get old-props' k)]
+                       (when (not= new-val old-val)
+                         (if (= old-val :noria-handler)
+                           [k :-noria-handler]
+                           [k new-val])))) all-keys))))
+
+(defn make-remote-tk [callbacks outgoing]
+  (let [x (atom 0)]
     (reify noria/Toolkit
       (make-node [tk e] (swap! x inc))
       (perform-updates [tk u]
         (->> u
              (map (fn [{type :update/type :as u}]
                     (cond (= :make-node type)
-                          (update u :make-node/props register-callbacks (:make-node/node u))
+                          (let [{:make-node/keys [node props]} u]
+                            (assoc u :make-node/props (props-diff! callbacks node nil props)))
                           (= :update-props type)
-                          (-> u
-                              (update :update-props/new-props register-callbacks (:update-props/node u))
-                              (update :update-props/old-props remove-callbacks))
+                          (let [{:update-props/keys [node old-props new-props]} u]
+                            (-> u
+                                (assoc :update-props/props-diff (props-diff! callbacks node old-props new-props))
+                                (dissoc :update-props/old-props :update-props/new-props)))
                           :else u)))
-             ((fn [update]
-                (prn "put: " (now))
-                update))
              (a/put! outgoing))))))
 
 (defn gen-elems [n update-fn *counter]
-  (map (fn [idx] [:div {:text idx
-                        :on-click (fn []
-                                    (swap! *counter inc)
-                                    (update-fn))}]) (range n)))
+  (map (fn [idx] [:div {:on-click (fn []
+                                   (swap! *counter inc)
+                                   (update-fn))}
+                 [:text {:text (str idx)}]]) (range n)))
 
 (defn run-event-loop [{:keys [incoming outgoing] :as endpoint}]
   (let [callbacks (atom {})
-        tk (make-remote-tk callbacks endpoint)
+        tk (make-remote-tk callbacks outgoing)
         *counter (atom 3)
         *c (atom nil)
         update! (fn update! []
@@ -99,9 +107,10 @@
     (reset! *c c)
     (noria/perform-updates tk u)
     (a/go (loop []
-            (when-let [cb (a/<! incoming)]
-              (prn "get: " (now))
-              ((get @callbacks cb))
+            (when-let [{:strs [node key arguments] :as msg} (a/<! incoming)]
+              (prn msg)
+              (when-let [cb (get @callbacks [(keyword key) node])]                
+                (apply cb arguments))
               (recur))))))
 
 (defn connect-handler [req]
@@ -116,14 +125,8 @@
     (run-event-loop endpoint)))
 
 (defn start-server []
-  (http/start-server #'connect-handler {:port port
-                                         :netty {"child.reuseAddress" true,
-                                                 "reuseAddress" true,
-                                                 "child.keepAlive" true,
-                                                 "child.connectTimeoutMillis" 100,
-                                                 "tcpNoDelay" true,
-                                                 "readWriteFair" true,
-                                                 "child.tcpNoDelay" true}}))
+  (http/start-server #'connect-handler {:port 8000
+                                        :bootstrap-transform #(.childOption % ChannelOption/TCP_NODELAY true)}))
 
 (defn -main [& args]
   (println (str "server-started: " port))
@@ -132,13 +135,18 @@
 
 (comment
 
+
+  
+
+  (json/write-str {:update/type :make-node
+                   } )
+  (json/json-str )
+
+  (str :a/b)
   (.setOption server "tcpNoDelay" true)
 
-  (start-server)
+  (def server (start-server))
   (.close server)
-
-  (def server (http/start-server #'connect-handler {:port 8000
-                                                    :bootstrap-transform #(.childOption % ChannelOption/TCP_NODELAY true)}))
 
   (def client @(http/websocket-client "ws://localhost:8000"))
 

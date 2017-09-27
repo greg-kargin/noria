@@ -1,4 +1,64 @@
-(ns server-ws.noria)
+(ns server-ws.noria
+  (:require [clojure.spec.alpha :as s]))
+
+(s/def ::element-type (s/or :primitive keyword? :user fn?))
+(s/def ::props (s/map-of keyword? any?))
+(s/def ::element (s/spec (s/cat :type ::element-type :props (s/? ::props) :children (s/* ::element))))
+(s/def ::key any?)
+(s/def ::element-with-key (s/keys :req-un [::element ::key]))
+
+
+
+(s/def :component/element ::element-with-key)
+(s/def :component/key ::key)
+(s/def ::node any?)
+(s/def :component/node ::node)
+
+(s/def :component/subst ::component)
+
+(s/def ::user-component (s/keys :req [:component/node
+                                      :component/key
+                                      :component/element
+                                      :component/subst]))
+
+(s/def :component/children (s/coll-of ::component))
+(s/def ::primitive-component (s/keys :req [:component/node
+                                           :component/key
+                                           :component/element
+                                           :component/children]))
+
+(s/def ::component (s/or ::user-compomnent ::primitive-component))
+
+(defmulti update-spec :update/type)
+(s/def ::update (s/multi-spec update-spec :update/type))
+(s/def :make-node/node ::node)
+(s/def :make-node/props ::props)
+(s/def :make-node/type keyword?)
+
+(defmethod update-spec :make-node [_] (s/keys :req [:make-node/node
+                                                    :make-node/props
+                                                    :make-node/type]))
+
+(s/def :update-props/node ::node)
+(s/def :update-props/props-diff ::props)
+
+(defmethod update-spec :update-props [_] (s/keys :req [:update-props/node
+                                                       :update-props/props-diff]))
+
+(s/def :remove/node ::node)
+(defmethod update-spec :remove [_] (s/keys :req [:remove/node]))
+
+(s/def :destroy/node ::node)
+(defmethod update-spec :destroy [_] (s/keys :req [:destroy/node]))
+
+(s/def :add/index nat-int?)
+(s/def :add/parent ::node)
+(s/def :add/child ::node)
+
+(defmethod update-spec :add [_] (s/keys :req [:add/index
+                                              :add/parent
+                                              :add/child]))
+
 
 (defn longest [xs ys] (if (> (count xs) (count ys)) xs ys))
 
@@ -105,7 +165,7 @@
                           (fn [{node :component/node
                                key :component/key}]
                             (cond-> [{:update/type :remove
-                                      :remove/child node}]
+                                      :remove/node node}]
                               (not (contains? new-keys-set key))
                               (conj {:update/type :destroy
                                      :destroy/node node})))))
@@ -132,7 +192,7 @@
   (if (not= (get-type old-e) (get-type elt))
     (let [[new-c updates] (build-component e tk)]
       [new-c (concat updates [{:update/type :remove
-                               :remove/child node}
+                               :remove/node node}
                               {:update/type :destroy
                                :destroy/node node}])])
     (let [[children-reconciled children-updates] (reconcile-children c elt tk)
@@ -140,8 +200,8 @@
           props-updates (when (not= old-props new-props)
                           [{:update/type :update-props
                             :update-props/node node
-                            :update-props/old-props old-props
-                            :update-props/new-props new-props}])]
+                            :update-props/new-props new-props
+                            :update-props/old-props old-props}])]
       [(assoc c
          :component/element elt
          :component/children children-reconciled)
@@ -180,12 +240,73 @@
       (reify Toolkit
         (make-node [tk e]
           (swap! x inc))
-        (perform-updates [tk u]))))
+        (perform-updates [tk u]
+          (prn :perform-updates u)
+          u))))
 
   (def tk (tt))
 
-  (def comp (first (build-component {:elt [label 1]
-                                     :key 0} tk)))
+  (def *counter (atom 0))
+  
+  (defn gen-elems [n update-fn *counter]
+    (map (fn [idx] [:div {:on-click (fn []
+                                     (swap! *counter inc)
+                                     (update-fn))}
+                   [:text {:text (str idx)}]]) (range n)))
+
+  (def *c (atom nil))
+
+  (defn update! []
+    (let [[c' u] (reconcile @*c {:elt (into
+                                             [:div {:on-click (fn []
+                                                                (swap! *counter inc)
+                                                                (update!))}]
+                                             (gen-elems @*counter update! *counter))
+                                       :key 0} tk)]
+      (reset! *c c')
+      (perform-updates tk u)))
+  
+  (def cc (first (build-component {:elt (into
+                                           [:div {:on-click (fn []
+                                                              (swap! *counter inc)
+                                                              (update!))}]
+                                           (gen-elems @*counter update! *counter))
+                                   :key 0} tk)))
+  (reset! *c cc)
+  
+
+  (def on-click (-> @*c :component/element second :on-click))
+
+  (on-click)
+  (reset! *c comp)
+  cc 
+  #:component {:node 1, :key 0, :element [:div {:on-click #function[server-ws.noria/fn--31383]}], :children ()}
+  @*c
+  ({:update/type :update-props, :update-props/node 1, :update-props/new-props {:on-click #function[server-ws.noria/update!/fn--31377]}, :update-props/old-props {:on-click #function[server-ws.noria/fn--31383]}}
+   {:update/type :make-node, :make-node/node 2, :make-node/type :div, :make-node/props {:on-click #function[server-ws.noria/gen-elems/fn--31369/fn--31370]}}
+   {:update/type :make-node, :make-node/node 3, :make-node/type :text, :make-node/props {:text "0"}}
+   {:update/type :add, :add/index 0, :add/parent 2, :add/child 3}
+   {:update/type :add, :add/index 0, :add/child 2, :add/parent 1})
+
+  ({:update/type :update-props,
+    :update-props/node 1,
+    :update-props/new-props {:on-click #function[server-ws.noria/update!/fn--31377]}
+    :update-props/old-props {:on-click #function[server-ws.noria/update!/fn--31377]}}
+   {:update/type :update-props,
+    :update-props/node 2,
+    :update-props/new-props {:on-click #function[server-ws.noria/gen-elems/fn--31369/fn--31370]}
+    :update-props/old-props {:on-click #function[server-ws.noria/gen-elems/fn--31369/fn--31370]}}
+   {:update/type :make-node, :make-node/node 4, :make-node/type nil, :make-node/props nil}
+   {:update/type :remove, :remove/node 3}
+   {:update/type :destroy, :destroy/node 3}
+   
+   {:update/type :make-node, :make-node/node 5, :make-node/type :div, :make-node/props {:on-click #function[server-ws.noria/gen-elems/fn--31369/fn--31370]}}
+   {:update/type :make-node, :make-node/node 6, :make-node/type :text, :make-node/props {:text "1"}}
+   {:update/type :add, :add/index 0, :add/parent 5, :add/child 6}
+   {:update/type :add, :add/index 1, :add/child 5, :add/parent 1}
+   )
+
+  comp
 
   (def comp' (first (reconcile comp {:elt [label 3] :key 0} tk)))
 
