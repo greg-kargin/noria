@@ -7,16 +7,14 @@
             [cognitect.transit :as transit]
             [clojure.core.async :as a]
             [server-ws.noria :as noria])
-  (:import [java.io ByteArrayOutputStream ByteArrayInputStream]))
+  (:import [java.io ByteArrayOutputStream ByteArrayInputStream]
+           [java.util Date]
+           [io.netty.channel ChannelOption]))
+
+(defn now [] (new java.util.Date))
 
 (def port 8000)
-
 (def bufsize 1024)
-
-(def non-websocket-request
-  {:status 400
-   :headers {"content-type" "application/text"}
-   :body "Expected a WebSocket request."})
 
 (defonce endpoints (atom []))
 
@@ -67,33 +65,42 @@
                               (update :update-props/new-props register-callbacks (:update-props/node u))
                               (update :update-props/old-props remove-callbacks))
                           :else u)))
+             ((fn [update]
+                (prn "put: " (now))
+                update))
              (a/put! outgoing))))))
+
+(defn gen-elems [n update-fn *counter]
+  (map (fn [idx] [:div {:text idx
+                        :on-click (fn []
+                                    (swap! *counter inc)
+                                    (update-fn))}]) (range n)))
 
 (defn run-event-loop [{:keys [incoming outgoing] :as endpoint}]
   (let [callbacks (atom {})
         tk (make-remote-tk callbacks endpoint)
-        *text (atom "hello world")
+        *counter (atom 3)
         *c (atom nil)
         update! (fn update! []
-                  (prn :update)
-                  (let [[c' u] (noria/reconcile @*c {:elt [:div {:text @*text
-                                                                 :on-click (fn []
-                                                                             (swap! *text str "!")
-                                                                             (update!))}]
+                  (let [[c' u] (noria/reconcile @*c {:elt (into
+                                                           [:div {:on-click (fn []
+                                                                              (swap! *counter inc)
+                                                                              (update!))}]
+                                                           (gen-elems @*counter update! *counter))
                                                      :key 0} tk)]
                     (reset! *c c')
                     (noria/perform-updates tk u)))
-        [c u] (noria/build-component {:elt [:div {:text @*text
-                                                  :on-click (fn []
-                                                              (swap! *text str "!")
-                                                              (update!))}]
-                                      :key 0}
-                                     tk)]
+        [c u] (noria/build-component {:elt (into
+                                            [:div {:on-click (fn []
+                                                               (swap! *counter inc)
+                                                               (update!))}]
+                                            (gen-elems @*counter update! *counter))
+                                      :key 0} tk)]
     (reset! *c c)
     (noria/perform-updates tk u)
     (a/go (loop []
             (when-let [cb (a/<! incoming)]
-              (prn cb callbacks)
+              (prn "get: " (now))
               ((get @callbacks cb))
               (recur))))))
 
@@ -104,7 +111,7 @@
                     (stream/->sink incoming)
                     {:downstream? true})
     (stream/connect (stream/map encode (stream/->source outgoing))
-                    socket #_(stream/map encode socket)
+                    socket
                     {:upstream? true})
     (run-event-loop endpoint)))
 
@@ -130,7 +137,8 @@
   (start-server)
   (.close server)
 
-  (def server (http/start-server #'connect-handler {:port 8000}))
+  (def server (http/start-server #'connect-handler {:port 8000
+                                                    :bootstrap-transform #(.childOption % ChannelOption/TCP_NODELAY true)}))
 
   (def client @(http/websocket-client "ws://localhost:8000"))
 
@@ -139,24 +147,4 @@
 
   (stream/take! client)
 
-
-
-  #_(:cljs
-     (defn encode
-       ([data] (encode data nil))
-       ([data {::keys [write-handlers rewrite-outgoing]}]
-        (let [w (transit/writer :json {:handlers write-handlers})]
-          (transit/write w (cond-> data
-                             (some? rewrite-outgoing) (rewrite-outgoing)))))))
-
-  #_(:cljs
-     (defn decode
-       ([transit-data] (decode transit-data nil))
-       ([transit-data {::keys [read-handlers rewrite-incoming]}]
-        (let [r (transit/reader :json {:handlers read-handlers})]
-          (cond-> (transit/read r transit-data)
-            (some? rewrite-incoming) (rewrite-incoming))))))
-
-
-
-  )
+)

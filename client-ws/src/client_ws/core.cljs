@@ -1,36 +1,22 @@
 (ns client-ws.core
   (:require [chord.client :refer [ws-ch]]
             [cljs.core.async :refer [chan <! >! put! close! timeout]]
-            [clojure.string :as s]
-            #_[reagent.core :as r])
+            [clojure.string :as s])
   (:require-macros [cljs.core.async.macros :refer [go go-loop]]))
 
 (enable-console-print!)
-
-#_(defonce state (r/atom nil))
-
-#_(defn recieve-msg [server-ch]
-  (go-loop []
-    (let [{:keys [message error] :as msg} (<! server-ch)]
-      (reset! state message)
-      (when message
-        (recur)))))
-
-#_(defn recieve-msg [ws-chan]
-  (go
-    (:message (<! ws-chan))))
 
 (defmulti perform-update! :update/type)
 
 (defonce nodes (atom {}))
 (defonce callbacks (atom {:on-click #{}}))
 
-
 (defmethod perform-update! :make-node
   [{:make-node/keys [node type props]}]
   (let [{:keys [text]} props
-        elt (js/document.createElement type)]
-    (.setAttribute elt "noria-id" node)
+        elt (js/document.createElement (name type))]
+    #_(.setAttribute elt "noria-id" node)
+    (set! (.-id elt) node)
     (set! (.-innerHTML elt) text)
     (swap! nodes assoc node elt)
     (when (:on-click props)
@@ -38,14 +24,31 @@
     (.appendChild (js/document.getElementById "root") elt)))
 
 (defmethod perform-update! :update-props
-  [{:update-props/keys [new-props node]}]
+  [{:update-props/keys [new-props old-props node]}]
   (when-let [elt (get @nodes node)]
     (when (:on-click new-props)
       (swap! callbacks update :on-click conj node))
-    (set! (.-innerHTML elt) (:text new-props))))
+    #_(set! (.-innerHTML elt) (:text new-props))))
+
+(defmethod perform-update! :add
+  [{:add/keys [index parent child]}]
+  (let [parent-node (js/document.getElementById parent)
+        child-node (js/document.getElementById child)]
+    (.insertBefore parent-node
+                   child-node
+                   (aget (.-children parent-node) index))))
+
+;; unmount child
+(defmethod perform-update! :remove
+  [{:remove/keys [child]}]
+  (.remove (js/document.getElementById child)))
+
+;; remove node from nodes atom
+(defmethod perform-update! :destroy
+  [{:destroy/keys [node]}]
+  (swap! nodes dissoc node))
 
 (defn perform-updates! [updates]
-  #_(prn updates)
   (doseq [update updates]
     (perform-update! update)))
 
@@ -55,10 +58,10 @@
 
 (defn find-source [elt handlers]
   (when (some? elt)
-    (let [id (.getAttribute elt "noria-id")]
+    (let [id (.-id elt) #_(.getAttribute elt "noria-id")]
       (if (contains? handlers (int id))
         (int id)
-        (recur (.getParent elt) handlers)))))
+        (recur (.-getParent elt) handlers)))))
 
 (defn -main []
   (go
