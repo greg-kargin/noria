@@ -7,23 +7,18 @@
 (s/def ::key any?)
 (s/def ::element-with-key (s/keys :req-un [::element ::key]))
 
-
-
 (s/def :component/element ::element-with-key)
-(s/def :component/key ::key)
 (s/def ::node any?)
 (s/def :component/node ::node)
 
 (s/def :component/subst ::component)
 
 (s/def ::user-component (s/keys :req [:component/node
-                                      :component/key
                                       :component/element
                                       :component/subst]))
 
 (s/def :component/children (s/coll-of ::component))
 (s/def ::primitive-component (s/keys :req [:component/node
-                                           :component/key
                                            :component/element
                                            :component/children]))
 
@@ -73,247 +68,195 @@
     (reset! impl* impl)
     (impl a b)))
 
-(defprotocol Toolkit
-  (make-node [tk e])
-  (perform-updates [tk u]))
+(defn get-children [{[_ props & r] :elt}]
+  (let [children (cond
+                   (map? props) r
+                   (some? props) (cons props r)
+                   :else r)]
+    (persistent! (second (reduce (fn [[indices res] e]
+                                   (if-let [key (or (:key (get-props e)) (:key (meta e)))]
+                                     [indices (conj res {:elt e :key key})]
+                                     (let [type (first e)
+                                           indices' (update indices type (fn [i] (if i (inc i) 0)))
+                                           idx (indices' type)]
+                                       [indices' (conj! res {:elt e :key [type idx]})])))
+                                 [{} (transient [])] children)))))
 
-(defn get-children [[_ props & children]]
-  (cond
-    (map? props) children
-    (some? props) (cons props children)
-    :else children))
-
-(defn get-props [[_ props & children]]
+(defn get-props [{[_ props & children] :elt}]
   (if (map? props) props nil))
 
-(defn get-key [[type :as e] indices]
-  (if-let [key (or (:key (get-props e)) (:key (meta e)))]
-    [key indices]
-    (let [indices' (update indices type (fn [i] (if i (inc i) 0)))
-          key (indices' type)]
-      [[type key] indices'])))
+(defn get-type [{[type] :elt}] type)
 
-(defn user-component? [[type]]
-  (fn? type))
+(defn user-component? [elt]
+   (fn? (get-type elt)))
 
-(defn elts-with-keys [children]
-  (second (reduce (fn [[indices res] e]
-                    (let [[key indices'] (get-key e indices)]
-                      [indices' (conj res {:elt e
-                                           :key key})]))
-                  [{} []] children)))
+(defn map-children [f next-id children]
+  (let [[recons* next-id'] (reduce (fn [[recons next-id] c]
+                                     (let [[r next-id'] (f c next-id)]
+                                       [(conj! recons r) next-id']))
+                                   [(transient []) next-id]
+                                   children)]
+    [(persistent! recons*) next-id']))
 
-(def get-type first)
-
-(defn build-component [{[type & args :as elt] :elt key :key} tk]
+(defn build-component [{[type & args] :elt key :key :as elt} next-id]
   (if (user-component? elt)
     (let [subst (apply type args)
-          [c-subst updates] (build-component {:elt subst
-                                              :key key} tk)]
-      [{:component/node (:component/node c-subst)
-        :component/key key
-        :component/element elt
-        :component/subst c-subst}
-       updates])
-    (let [new-node (make-node tk elt)
-          built (map #(build-component % tk) (elts-with-keys (get-children elt)))
-          c-components (map first built)
-          updates (mapcat second built)]
-      [{:component/node new-node
-        :component/key key
-        :component/element elt
-        :component/children c-components}
-       (concat [{:update/type :make-node
-                 :make-node/node new-node
-                 :make-node/type (get-type elt)
-                 :make-node/props (get-props elt)}]
-               updates
-               (map-indexed (fn [i c]
-                              {:update/type :add
-                               :add/index i
-                               :add/parent new-node
-                               :add/child (:component/node c)})
-                            c-components))])))
+          [{c-subst :component
+            updates :updates} next-id'] (build-component {:elt subst
+                                                          :key key} next-id)]
+      [{:component {:component/node (:component/node c-subst)
+                    :component/element elt
+                    :component/subst c-subst}
+        :updates updates} next-id'])
+    (let [[built next-id'] (map-children build-component (inc next-id) (get-children elt))
+          c-components (map :component built)]
+      [{:component {:component/node next-id
+                     :component/element elt
+                     :component/children c-components}
+         :updates (concat [{:update/type :make-node
+                            :make-node/node next-id
+                            :make-node/type type
+                            :make-node/props (get-props elt)}]
+                          (mapcat :updates built)
+                          (map-indexed (fn [i c]
+                                         {:update/type :add
+                                          :add/index i
+                                          :add/parent next-id
+                                          :add/child (:component/node c)})
+                                       c-components))} next-id'])))
 
 (declare reconcile)
 
 (defn reconcile-children [{c-children :component/children
-                           c-element :component/element
-                           c-key :component/key
-                           c-node :component/node :as c} e tk]
-  (let [new-children (elts-with-keys (get-children e))
-        old-keys (map :component/key c-children)
+                           c-node :component/node :as c} new-children next-id]
+  (let [old-keys (map (comp :key :component/element) c-children)
         new-keys (map :key new-children)]
     (if (not= old-keys new-keys)
       (let [common (into #{} (lcs old-keys new-keys))
             key->component (->> c-children
-                                (map (fn [{key :component/key :as c}] [key c]))
+                                (map (fn [c] [(:key (:component/element c)) c]))
                                 (into {}))
 
-            recon (map (fn [{e :elt
-                            k :key :as child}]
-                         (if-let [old-c (key->component k)]
-                           (reconcile old-c child tk)
-                           (build-component child tk)))
-                       new-children)
+            [recon next-id'] (map-children (fn [child next-id]
+                                             (if-let [old-c (key->component (:key child))]
+                                               (reconcile old-c child next-id)
+                                               (build-component child next-id)))
+                                           next-id new-children)
 
             new-keys-set (into #{} new-keys)
 
             removes (->> c-children
-                         (remove #(contains? common (:component/key %)))
+                         (remove #(contains? common (-> % :component/element :key)))
                          (mapcat
                           (fn [{node :component/node
-                               key :component/key}]
-                            (cond-> [{:update/type :remove
-                                      :remove/node node}]
-                              (not (contains? new-keys-set key))
-                              (conj {:update/type :destroy
-                                     :destroy/node node})))))
+                               elt :component/element}]
+                            (let [remove {:update/type :remove
+                                          :remove/node node}]
+                              (if (contains? new-keys-set (:key elt))
+                                [remove]
+                                [remove {:update/type :destroy
+                                         :destroy/node node}])))))
 
-            new-c-children (map first recon)
+            new-c-children (map :component recon)
 
             adds (->> new-c-children
-                      (keep-indexed (fn [i {k :component/key
-                                           e :component/element
+                      (keep-indexed (fn [i {elt :component/element
                                            child-node :component/node}]
-                                      (when-not (contains? common k)
+                                      (when-not (contains? common (:key elt))
                                         {:update/type :add
                                          :add/index i
                                          :add/child child-node
                                          :add/parent c-node}))))]
-        [(map first recon) (concat removes (mapcat second recon) adds)])
-      (let [recon (map (fn [c elt]
-                         (reconcile c elt tk))
-                       c-children (get-children e))]
-        [(map first recon) (mapcat second recon)]))))
+        [{:components (map :component recon)
+          :updates (concat removes (mapcat :updates recon) adds)}
+         next-id'])
+      (let [[recons next-id'] (map-children (fn [[child-c child-e] next-id]
+                                              (reconcile child-c child-e next-id))
+                                            next-id
+                                            (map vector c-children new-children))]
+        [{:components (map :component recons)
+          :updates (mapcat :updates recons)} next-id']))))
 
-(defn reconcile-primitive [{old-e :component/element
-                            node :component/node :as c} {elt :elt :as e} tk]
-  (if (not= (get-type old-e) (get-type elt))
-    (let [[new-c updates] (build-component e tk)]
-      [new-c (concat updates [{:update/type :remove
-                               :remove/node node}
-                              {:update/type :destroy
-                               :destroy/node node}])])
-    (let [[children-reconciled children-updates] (reconcile-children c elt tk)
-          [old-props new-props] [(get-props old-e) (get-props elt)]
-          props-updates (when (not= old-props new-props)
-                          [{:update/type :update-props
-                            :update-props/node node
-                            :update-props/new-props new-props
-                            :update-props/old-props old-props}])]
-      [(assoc c
-         :component/element elt
-         :component/children children-reconciled)
-       (concat props-updates children-updates)])))
+(defn reconcile-primitive [{old-elt :component/element
+                            node :component/node :as c} elt next-id]
+  (if (not= (get-type old-elt) (get-type elt))
+    (let [[{:keys [component updates]} next-id'] (build-component elt next-id)]
+      [{:component component
+        :updates (concat updates
+                         [{:update/type :remove
+                           :remove/node node}
+                          {:update/type :destroy
+                           :destroy/node node}])}
+       next-id'])
+    (let [new-children (get-children elt)
+          [{children-reconciled :components 
+            children-updates :updates} next-id'] (reconcile-children c new-children next-id)
+          old-props (get-props old-elt)
+          new-props (get-props elt)]
+      [{:component (assoc c
+                          :component/element elt
+                          :component/children children-reconciled)
+        :updates (if (= old-props new-props)
+                   children-updates
+                   (cons {:update/type :update-props
+                          :update-props/node node
+                          :update-props/new-props new-props
+                          :update-props/old-props old-props}
+                         children-updates))}
+       next-id'])))
 
 (defn reconcile-user [{c-subst :component/subst
-                       old-elt :component/element :as c} {[type & args :as elt] :elt key :key} tk]
-  (let [subst (if (not= elt old-elt)
-                (apply type args)
-                (:component/element c-subst))
-        [new-c-subst updates] (reconcile c-subst {:elt subst
-                                                  :key key} tk)]
-      [(assoc c
-              :component/subst new-c-subst
-              :component/element elt
-              :component/node (:component/node new-c-subst))
-       updates]))
+                       old-elt :component/element :as c} {[type & args] :elt key :key :as elt} next-id]
+  (if (= elt old-elt)
+    [{:component c
+      :updates []} next-id]
+    (let [subst (apply type args)
+          [{new-c-subst :component
+            updates :updates} next-id'] (reconcile c-subst {:elt subst
+                                                            :key key} next-id)]
+      [{:component (assoc c
+                          :component/subst new-c-subst
+                          :component/element elt
+                          :component/node (:component/node new-c-subst))
+         :updates updates} next-id'])))
 
-(defn reconcile [c e tk]
-  (if (user-component? (:elt e))
-    (reconcile-user c e tk)
-    (reconcile-primitive c e tk)))
+(defn reconcile [c elt next-id]
+  (if (user-component? elt)
+    (reconcile-user c elt next-id)
+    (reconcile-primitive c elt next-id)))
 
 (comment
 
-  (defn label [x]
-    [:label {:text (str x)}])
 
-  (defn labels [x]
-    (into [:div]
-          (map (fn [i] [label i]) (range x))))
+  (def e0 {:elt [:div {:on-click (fn [])}], :key 0})
 
+  (def e1 {:elt [:div
+                 {:on-click (fn [])}
+                 [:div
+                  {:on-click (fn [])}
+                  [:text {:text "0"}]]],
+           :key 0})
 
-  (defn tt []
-    (let [x (atom 0)]
-      (reify Toolkit
-        (make-node [tk e]
-          (swap! x inc))
-        (perform-updates [tk u]
-          (prn :perform-updates u)
-          u))))
+  (def e2 {:elt [:div
+                 {:on-click (fn [])}
+                 [:div
+                  {:on-click (fn [])}
+                  [:text {:text "0"}]]
+                 [:div
+                  {:on-click (fn [])}
+                  [:text {:text "1"}]]],
+           :key 0})
 
-  (def tk (tt))
-
-  (def *counter (atom 0))
-  
-  (defn gen-elems [n update-fn *counter]
-    (map (fn [idx] [:div {:on-click (fn []
-                                     (swap! *counter inc)
-                                     (update-fn))}
-                   [:text {:text (str idx)}]]) (range n)))
-
-  (def *c (atom nil))
-
-  (defn update! []
-    (let [[c' u] (reconcile @*c {:elt (into
-                                             [:div {:on-click (fn []
-                                                                (swap! *counter inc)
-                                                                (update!))}]
-                                             (gen-elems @*counter update! *counter))
-                                       :key 0} tk)]
-      (reset! *c c')
-      (perform-updates tk u)))
-  
-  (def cc (first (build-component {:elt (into
-                                           [:div {:on-click (fn []
-                                                              (swap! *counter inc)
-                                                              (update!))}]
-                                           (gen-elems @*counter update! *counter))
-                                   :key 0} tk)))
-  (reset! *c cc)
+  (def c0 (build-component e0 0))
   
 
-  (def on-click (-> @*c :component/element second :on-click))
+  (def r0 (reconcile (:component (first c0)) e1 1))
 
-  (on-click)
-  (reset! *c comp)
-  cc 
-  #:component {:node 1, :key 0, :element [:div {:on-click #function[server-ws.noria/fn--31383]}], :children ()}
-  @*c
-  ({:update/type :update-props, :update-props/node 1, :update-props/new-props {:on-click #function[server-ws.noria/update!/fn--31377]}, :update-props/old-props {:on-click #function[server-ws.noria/fn--31383]}}
-   {:update/type :make-node, :make-node/node 2, :make-node/type :div, :make-node/props {:on-click #function[server-ws.noria/gen-elems/fn--31369/fn--31370]}}
-   {:update/type :make-node, :make-node/node 3, :make-node/type :text, :make-node/props {:text "0"}}
-   {:update/type :add, :add/index 0, :add/parent 2, :add/child 3}
-   {:update/type :add, :add/index 0, :add/child 2, :add/parent 1})
+  (reconcile (:component (first r0)) e2 3)
 
-  ({:update/type :update-props,
-    :update-props/node 1,
-    :update-props/new-props {:on-click #function[server-ws.noria/update!/fn--31377]}
-    :update-props/old-props {:on-click #function[server-ws.noria/update!/fn--31377]}}
-   {:update/type :update-props,
-    :update-props/node 2,
-    :update-props/new-props {:on-click #function[server-ws.noria/gen-elems/fn--31369/fn--31370]}
-    :update-props/old-props {:on-click #function[server-ws.noria/gen-elems/fn--31369/fn--31370]}}
-   {:update/type :make-node, :make-node/node 4, :make-node/type nil, :make-node/props nil}
-   {:update/type :remove, :remove/node 3}
-   {:update/type :destroy, :destroy/node 3}
-   
-   {:update/type :make-node, :make-node/node 5, :make-node/type :div, :make-node/props {:on-click #function[server-ws.noria/gen-elems/fn--31369/fn--31370]}}
-   {:update/type :make-node, :make-node/node 6, :make-node/type :text, :make-node/props {:text "1"}}
-   {:update/type :add, :add/index 0, :add/parent 5, :add/child 6}
-   {:update/type :add, :add/index 1, :add/child 5, :add/parent 1}
-   )
+  (def c1 (build-component e1 0))
 
-  comp
-
-  (def comp' (first (reconcile comp {:elt [label 3] :key 0} tk)))
-
-  comp'
-
-  (def comp'' (reconcile comp' {:elt [labels 2] :key 0} tk))
-
-  comp''
+  (def r1 (reconcile (:component (first c1)) e2 3))
+  
 
   )
