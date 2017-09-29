@@ -68,22 +68,25 @@
     (reset! impl* impl)
     (impl a b)))
 
+(defn- get-props* [[_ props]]
+  (if (map? props) props nil))
+
 (defn get-children [{[_ props & r] :elt}]
   (let [children (cond
                    (map? props) r
                    (some? props) (cons props r)
                    :else r)]
     (persistent! (second (reduce (fn [[indices res] e]
-                                   (if-let [key (or (:key (get-props e)) (:key (meta e)))]
-                                     [indices (conj res {:elt e :key key})]
+                                   (if-let [key (or (:key (get-props* e)) (:key (meta e)))]
+                                     [indices (conj! res {:elt e :key key})]
                                      (let [type (first e)
                                            indices' (update indices type (fn [i] (if i (inc i) 0)))
                                            idx (indices' type)]
                                        [indices' (conj! res {:elt e :key [type idx]})])))
                                  [{} (transient [])] children)))))
 
-(defn get-props [{[_ props & children] :elt}]
-  (if (map? props) props nil))
+(defn get-props [elt-with-key]
+  (get-props* (:elt elt-with-key)))
 
 (defn get-type [{[type] :elt}] type)
 
@@ -98,13 +101,23 @@
                                    children)]
     [(persistent! recons*) next-id']))
 
+(def ^:dynamic *sink* nil)
+
 (defn build-component [{[type & args] :elt key :key :as elt} next-id]
-  (if (user-component? elt)
-    (let [subst (apply type args)
+  (if (user-component? elt)    
+    (let [sink (atom nil)
+          render (type (fn
+                      ([] nil)
+                      ([x y] (reset! *sink* y) nil)
+                      ([x] x)))
+          [state subst] (binding [*sink* (atom nil)]
+                          [(apply render (render) args) @*sink*])
           [{c-subst :component
             updates :updates} next-id'] (build-component {:elt subst
                                                           :key key} next-id)]
       [{:component {:component/node (:component/node c-subst)
+                    :component/state state
+                    :component/render render
                     :component/element elt
                     :component/subst c-subst}
         :updates updates} next-id'])
@@ -206,26 +219,99 @@
        next-id'])))
 
 (defn reconcile-user [{c-subst :component/subst
-                       old-elt :component/element :as c} {[type & args] :elt key :key :as elt} next-id]
-  (if (= elt old-elt)
-    [{:component c
-      :updates []} next-id]
-    (let [subst (apply type args)
-          [{new-c-subst :component
+                       render :component/render
+                       state :component/state
+                       old-elt :component/element :as c} {[_ & args] :elt key :key :as elt} next-id]
+  (let [[state' subst] (binding [*sink* (atom nil)]
+                         [(apply render state args)
+                          @*sink*])]
+    
+    (let [[{new-c-subst :component
             updates :updates} next-id'] (reconcile c-subst {:elt subst
                                                             :key key} next-id)]
       [{:component (assoc c
                           :component/subst new-c-subst
+                          :component/state state'
                           :component/element elt
                           :component/node (:component/node new-c-subst))
-         :updates updates} next-id'])))
+        :updates updates} next-id'])))
 
 (defn reconcile [c elt next-id]
   (if (user-component? elt)
     (reconcile-user c elt next-id)
     (reconcile-primitive c elt next-id)))
 
+(defn pure-component []
+  (fn [r-f]
+    (fn
+      ([] {:foreign (r-f)})
+      ([{:keys [foreign props] :as state} & args]
+       (if (= args props)
+         state
+         {:foreign (apply r-f foreign args)
+          :props args}))
+      ([state] (r-f (:foreign state))))))
+
+(defn component [render]
+  (fn [r-f]
+    (fn
+      ([] (r-f))
+      ([state & args]
+       (r-f state (apply render args)))
+      ([state] (r-f state)))))
+
+(def user-component
+  (comp
+   (pure-component)
+   (component
+    (fn [x y]
+      [:div {} [:text {:text (str x y)}]]))))
+
+
+
+(let [[{c :component} next-id] (build-component {:elt [user-component 1 2]
+                                                 :key 0} 0)]
+  (reconcile c {:elt [user-component 1 3]
+                :key 0} next-id))
+
+(defn my-comp [update!]
+  (fn [rf]
+    (fn
+      ([] {:state 0
+           :downstream (rf)})
+      ([state x y]
+       {:state (+ x y)
+        :downstream (rf (:downstream state) [:div [:text {:text (str (+ x y))}]])})
+      ([state]
+       
+       ))))
+
+(def my-comp1 (component (fn [n click]
+                           (if (< 0 n)
+                             [:div
+                              [:text {:text (str n)}]
+                              ^{:key 1} [my-comp1 (dec n) click]
+                              ^{:key 2} [my-comp1 (dec n) click]]
+                             [:div {:on-click click}
+                              [:text {:text (str n)}]]))))
+
+
 (comment
+
+  (def e {:elt [my-comp1 5 "fuck yo"]
+          :key 0})
+
+  (def cc (build-component e 0))
+  (def c (:component (first cc)))
+
+  (time
+   (do
+     (doall (reconcile c {:elt [my-comp1 5 "fuck yo"]
+                          :key 0} (second cc))
+            )
+     nil)
+   
+   )
 
 
   (def e0 {:elt [:div {:on-click (fn [])}], :key 0})

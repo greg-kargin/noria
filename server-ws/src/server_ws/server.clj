@@ -60,52 +60,60 @@
                            [k :-noria-handler]
                            [k new-val])))) all-keys))))
 
-(defn make-remote-tk [callbacks outgoing]
-  (let [x (atom 0)]
-    (reify noria/Toolkit
-      (make-node [tk e] (swap! x inc))
-      (perform-updates [tk u]
-        (->> u
-             (map (fn [{type :update/type :as u}]
-                    (cond (= :make-node type)
-                          (let [{:make-node/keys [node props]} u]
-                            (assoc u :make-node/props (props-diff! callbacks node nil props)))
-                          (= :update-props type)
-                          (let [{:update-props/keys [node old-props new-props]} u]
-                            (-> u
-                                (assoc :update-props/props-diff (props-diff! callbacks node old-props new-props))
-                                (dissoc :update-props/old-props :update-props/new-props)))
-                          :else u)))
-             (a/put! outgoing))))))
+(defn perform-updates! [callbacks outgoing u]
+  (->> u
+       (map (fn [{type :update/type :as u}]
+              (cond (= :make-node type)
+                    (let [{:make-node/keys [node props]} u]
+                      (assoc u :make-node/props (props-diff! callbacks node nil props)))
+                    (= :update-props type)
+                    (let [{:update-props/keys [node old-props new-props]} u]
+                      (-> u
+                          (assoc :update-props/props-diff (props-diff! callbacks node old-props new-props))
+                          (dissoc :update-props/old-props :update-props/new-props)))
+                    :else u)))
+       (remove (fn [u]
+                 (and (= (:update/type u) :update-props)
+                      (empty? (:update-props/props-diff u)))))
+       (a/put! outgoing)))
+
+(def my-comp (noria/component (fn [n click]
+                                (if (< 0 n)
+                                  [:div
+                                   [:text {:text (str n)}]
+                                   [my-comp (dec n) click]
+                                   [my-comp (dec n) click]]
+                                  [:div {:on-click click}
+                                   [:text {:text (str n)}]]))))
 
 (defn gen-elems [n update-fn *counter]
-  (map (fn [idx] [:div {:on-click (fn []
-                                   (swap! *counter inc)
-                                   (update-fn))}
-                 [:text {:text (str idx)}]]) (range n)))
+  [my-comp n (fn []
+               (swap! *counter inc)
+               (update-fn))])
 
 (defn run-event-loop [{:keys [incoming outgoing] :as endpoint}]
   (let [callbacks (atom {})
-        tk (make-remote-tk callbacks outgoing)
         *counter (atom 3)
         *c (atom nil)
+        *next-id (atom 0)
         update! (fn update! []
-                  (let [[c' u] (noria/reconcile @*c {:elt (into
-                                                           [:div {:on-click (fn []
-                                                                              (swap! *counter inc)
-                                                                              (update!))}]
-                                                           (gen-elems @*counter update! *counter))
-                                                     :key 0} tk)]
+                  (let [[{c' :component
+                          u :updates} next-id] (noria/reconcile @*c {:elt (into
+                                                                           [:div
+                                                                            (gen-elems @*counter update! *counter)])
+                                                                     :key 0} @*next-id)]
                     (reset! *c c')
-                    (noria/perform-updates tk u)))
-        [c u] (noria/build-component {:elt (into
-                                            [:div {:on-click (fn []
-                                                               (swap! *counter inc)
-                                                               (update!))}]
-                                            (gen-elems @*counter update! *counter))
-                                      :key 0} tk)]
+                    (reset! *next-id next-id)
+                    (perform-updates! callbacks outgoing u)))
+        [{c :component
+          u :updates} next-id] (noria/build-component
+                                {:elt (into
+                                       [:div
+                                        (gen-elems @*counter update! *counter)])
+                                 :key 0} @*next-id)]
     (reset! *c c)
-    (noria/perform-updates tk u)
+    (reset! *next-id next-id)
+    (perform-updates! callbacks outgoing u)
     (a/go (loop []
             (when-let [{:strs [node key arguments] :as msg} (a/<! incoming)]
               (prn msg)
@@ -133,10 +141,8 @@
   (netty/wait-for-close
    (start-server)))
 
-(comment
 
-
-  
+(comment 
 
   (json/write-str {:update/type :make-node
                    } )

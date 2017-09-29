@@ -30,7 +30,7 @@ function runClient() {
         var updates = JSON.parse(event.data);
         for (i in updates) {
             var e = updates[i];
-            console.log(e);
+            //console.log(e);
             var updateType = e["update_type"];
             if (updateType == "make-node") {
                 var type = e["make-node_type"];
@@ -42,7 +42,7 @@ function runClient() {
                     var props = preprocessProps(ws, node, e["make-node_props"]);
                     var component = constr(props);
                     components[node] = component;
-                    if (node == 1) {
+                    if (node == 0) {
                         document.getElementById("root").appendChild(component.domNode);
                     }
                 }
