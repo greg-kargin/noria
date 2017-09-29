@@ -97,23 +97,23 @@
         *c (atom nil)
         *next-id (atom 0)
         update! (fn update! []
-                  (let [[{c' :component
-                          u :updates} next-id] (noria/reconcile @*c {:elt (into
-                                                                           [:div
-                                                                            (gen-elems @*counter update! *counter)])
-                                                                     :key 0} @*next-id)]
+                  (let [[c' ctx] (noria/reconcile @*c {:elt (into
+                                                             [:div
+                                                              (gen-elems @*counter update! *counter)])
+                                                       :key 0} {:next-id @*next-id
+                                                       :updates (transient [])})]
                     (reset! *c c')
-                    (reset! *next-id next-id)
-                    (perform-updates! callbacks outgoing u)))
-        [{c :component
-          u :updates} next-id] (noria/build-component
+                    (reset! *next-id (:next-id ctx))
+                    (perform-updates! callbacks outgoing (persistent! (:updates ctx)))))
+        [c ctx] (noria/build-component
                                 {:elt (into
                                        [:div
                                         (gen-elems @*counter update! *counter)])
-                                 :key 0} @*next-id)]
+                                 :key 0} {:next-id @*next-id
+                                          :updates (transient [])})]
     (reset! *c c)
-    (reset! *next-id next-id)
-    (perform-updates! callbacks outgoing u)
+    (reset! *next-id (:next-id ctx))
+    (perform-updates! callbacks outgoing (persistent! (:updates ctx)))
     (a/go (loop []
             (when-let [{:strs [node key arguments] :as msg} (a/<! incoming)]
               (prn msg)

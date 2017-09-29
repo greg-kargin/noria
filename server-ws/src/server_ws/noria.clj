@@ -93,18 +93,18 @@
 (defn user-component? [elt]
    (fn? (get-type elt)))
 
-(defn map-children [f next-id children]
-  (let [[recons* next-id'] (reduce (fn [[recons next-id] c]
-                                     (let [[r next-id'] (f c next-id)]
-                                       [(conj! recons r) next-id']))
-                                   [(transient []) next-id]
+(defn map-children [f ctx children]
+  (let [[recons* ctx'] (reduce (fn [[recons ctx] c]
+                                     (let [[r ctx'] (f c ctx)]
+                                       [(conj! recons r) ctx']))
+                                   [(transient []) ctx]
                                    children)]
-    [(persistent! recons*) next-id']))
+    [(persistent! recons*) ctx']))
 
 (def ^:dynamic *sink* nil)
 
-(defn build-component [{[type & args] :elt key :key :as elt} next-id]
-  (if (user-component? elt)    
+(defn build-component [{[type & args] :elt key :key :as elt} ctx]
+  (if (user-component? elt)
     (let [sink (atom nil)
           render (type (fn
                       ([] nil)
@@ -112,134 +112,119 @@
                       ([x] x)))
           [state subst] (binding [*sink* (atom nil)]
                           [(apply render (render) args) @*sink*])
-          [{c-subst :component
-            updates :updates} next-id'] (build-component {:elt subst
-                                                          :key key} next-id)]
-      [{:component {:component/node (:component/node c-subst)
-                    :component/state state
-                    :component/render render
-                    :component/element elt
-                    :component/subst c-subst}
-        :updates updates} next-id'])
-    (let [[built next-id'] (map-children build-component (inc next-id) (get-children elt))
-          c-components (map :component built)]
-      [{:component {:component/node next-id
-                     :component/element elt
-                     :component/children c-components}
-         :updates (concat [{:update/type :make-node
-                            :make-node/node next-id
-                            :make-node/type type
-                            :make-node/props (get-props elt)}]
-                          (mapcat :updates built)
-                          (map-indexed (fn [i c]
-                                         {:update/type :add
-                                          :add/index i
-                                          :add/parent next-id
-                                          :add/child (:component/node c)})
-                                       c-components))} next-id'])))
+          [c-subst ctx'] (build-component {:elt subst
+                                           :key key} ctx)]
+      [{:component/node (:component/node c-subst)
+        :component/state state
+        :component/render render
+        :component/element elt
+        :component/subst c-subst}
+       ctx'])
+    (let [new-node (:next-id ctx)
+          [c-components ctx'] (map-children build-component (update ctx :next-id inc) (get-children elt))]
+      [{:component/node new-node
+        :component/element elt
+        :component/children c-components}
+       (update ctx' :updates (fn [updates]
+                               (transduce
+                                (map-indexed (fn [i c]
+                                               {:update/type :add
+                                                :add/index i
+                                                :add/parent new-node
+                                                :add/child (:component/node c)}))
+                                conj!
+                                (conj! updates
+                                       {:update/type :make-node
+                                        :make-node/node new-node
+                                        :make-node/type type
+                                        :make-node/props (get-props elt)})
+                                c-components)))])))
 
 (declare reconcile)
 
 (defn reconcile-children [{c-children :component/children
-                           c-node :component/node :as c} new-children next-id]
+                           c-node :component/node :as c} new-children ctx]
   (let [old-keys (map (comp :key :component/element) c-children)
         new-keys (map :key new-children)]
     (if (not= old-keys new-keys)
       (let [common (into #{} (lcs old-keys new-keys))
-            key->component (->> c-children
-                                (map (fn [c] [(:key (:component/element c)) c]))
-                                (into {}))
-
-            [recon next-id'] (map-children (fn [child next-id]
-                                             (if-let [old-c (key->component (:key child))]
-                                               (reconcile old-c child next-id)
-                                               (build-component child next-id)))
-                                           next-id new-children)
-
+            key->component (into {}
+                                 (map (fn [c] [(:key (:component/element c)) c]))
+                                 c-children)
+            
             new-keys-set (into #{} new-keys)
+            ctx-with-removes (update ctx :updates
+                                     (fn [updates]
+                                       (transduce (comp (remove #(contains? common (-> % :component/element :key)))
+                                                        (mapcat
+                                                         (fn [{node :component/node
+                                                              elt :component/element}]
+                                                           (let [remove {:update/type :remove
+                                                                         :remove/node node}]
+                                                             (if (contains? new-keys-set (:key elt))
+                                                               [remove]
+                                                               [remove {:update/type :destroy
+                                                                        :destroy/node node}])))))
+                                                  conj! updates c-children)))
 
-            removes (->> c-children
-                         (remove #(contains? common (-> % :component/element :key)))
-                         (mapcat
-                          (fn [{node :component/node
-                               elt :component/element}]
-                            (let [remove {:update/type :remove
-                                          :remove/node node}]
-                              (if (contains? new-keys-set (:key elt))
-                                [remove]
-                                [remove {:update/type :destroy
-                                         :destroy/node node}])))))
-
-            new-c-children (map :component recon)
-
-            adds (->> new-c-children
-                      (keep-indexed (fn [i {elt :component/element
-                                           child-node :component/node}]
-                                      (when-not (contains? common (:key elt))
-                                        {:update/type :add
-                                         :add/index i
-                                         :add/child child-node
-                                         :add/parent c-node}))))]
-        [{:components (map :component recon)
-          :updates (concat removes (mapcat :updates recon) adds)}
-         next-id'])
-      (let [[recons next-id'] (map-children (fn [[child-c child-e] next-id]
-                                              (reconcile child-c child-e next-id))
-                                            next-id
-                                            (map vector c-children new-children))]
-        [{:components (map :component recons)
-          :updates (mapcat :updates recons)} next-id']))))
+            [children-reconciled ctx'] (map-children (fn [child ctx]
+                                                       (if-let [old-c (key->component (:key child))]
+                                                         (reconcile old-c child ctx)
+                                                         (build-component child ctx)))
+                                                     ctx-with-removes new-children)]
+        [children-reconciled
+         (update ctx' :updates
+                 (fn [updates]
+                   (transduce (keep-indexed (fn [i {elt :component/element
+                                                   child-node :component/node}]
+                                              (when-not (contains? common (:key elt))
+                                                {:update/type :add
+                                                 :add/index i
+                                                 :add/child child-node
+                                                 :add/parent c-node})))
+                              conj! updates children-reconciled)))])
+      
+      (map-children (fn [[child-c child-e] ctx]
+                      (reconcile child-c child-e ctx))
+                    ctx
+                    (map vector c-children new-children)))))
 
 (defn reconcile-primitive [{old-elt :component/element
-                            node :component/node :as c} elt next-id]
+                            node :component/node :as c} elt ctx]
   (if (not= (get-type old-elt) (get-type elt))
-    (let [[{:keys [component updates]} next-id'] (build-component elt next-id)]
-      [{:component component
-        :updates (concat updates
-                         [{:update/type :remove
-                           :remove/node node}
-                          {:update/type :destroy
-                           :destroy/node node}])}
-       next-id'])
+    (build-component elt ctx)
     (let [new-children (get-children elt)
-          [{children-reconciled :components 
-            children-updates :updates} next-id'] (reconcile-children c new-children next-id)
+          [children-reconciled ctx'] (reconcile-children c new-children ctx)
           old-props (get-props old-elt)
           new-props (get-props elt)]
-      [{:component (assoc c
-                          :component/element elt
-                          :component/children children-reconciled)
-        :updates (if (= old-props new-props)
-                   children-updates
-                   (cons {:update/type :update-props
-                          :update-props/node node
-                          :update-props/new-props new-props
-                          :update-props/old-props old-props}
-                         children-updates))}
-       next-id'])))
+      [(assoc c
+              :component/element elt
+              :component/children children-reconciled)
+       (cond-> ctx'
+         (not= old-props new-props)
+         (update :updates conj! {:update/type :update-props
+                                 :update-props/node node
+                                 :update-props/new-props new-props
+                                 :update-props/old-props old-props}))])))
 
 (defn reconcile-user [{c-subst :component/subst
                        render :component/render
                        state :component/state
-                       old-elt :component/element :as c} {[_ & args] :elt key :key :as elt} next-id]
+                       old-elt :component/element :as c} {[_ & args] :elt key :key :as elt} ctx]  
   (let [[state' subst] (binding [*sink* (atom nil)]
                          [(apply render state args)
-                          @*sink*])]
-    
-    (let [[{new-c-subst :component
-            updates :updates} next-id'] (reconcile c-subst {:elt subst
-                                                            :key key} next-id)]
-      [{:component (assoc c
-                          :component/subst new-c-subst
-                          :component/state state'
-                          :component/element elt
-                          :component/node (:component/node new-c-subst))
-        :updates updates} next-id'])))
+                          @*sink*])        
+        [new-c-subst ctx'] (reconcile c-subst {:elt subst :key key} ctx)]
+    [(assoc c
+             :component/subst new-c-subst
+             :component/state state'
+             :component/element elt
+             :component/node (:component/node new-c-subst)) ctx']))
 
-(defn reconcile [c elt next-id]
+(defn reconcile [c elt ctx]
   (if (user-component? elt)
-    (reconcile-user c elt next-id)
-    (reconcile-primitive c elt next-id)))
+    (reconcile-user c elt ctx)
+    (reconcile-primitive c elt ctx)))
 
 (defn pure-component []
   (fn [r-f]
@@ -298,17 +283,19 @@
 
 (comment
 
-  (def e {:elt [my-comp1 5 "fuck yo"]
+  (def e {:elt [my-comp1 10 "fuck yo"]
           :key 0})
 
-  (def cc (build-component e 0))
-  (def c (:component (first cc)))
+  (def cc (build-component e {:updates (transient [])
+                              :next-id 0}))
+  (def c (first cc))
+  c
 
   (time
    (do
-     (doall (reconcile c {:elt [my-comp1 5 "fuck yo"]
-                          :key 0} (second cc))
-            )
+     (doall (persistent! (:updates (second (reconcile c {:elt [my-comp1 10 "fuck yo"]
+                                                         :key 0} {:updates (transient [])
+                                                                  :next-id (:next-id (second cc))}))))) 
      nil)
    
    )
