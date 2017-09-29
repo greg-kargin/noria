@@ -5,4 +5,5 @@
                  [org.clojure/core.async "0.3.443"]
                  [org.clojure/data.json "0.2.6"]
                  [com.cognitect/transit-clj "0.8.300"]]
-  :main server-ws.server)
+  :main server-ws.server
+  :source-paths ["src/clj" "andel/src/cljc"])

@@ -1,0 +1,4 @@
+[submodule "andel"]
+	path = andel
+	url = git@github.com:JetBrains/andel.git
+	branch = api-changes
