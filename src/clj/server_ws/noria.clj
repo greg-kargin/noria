@@ -1,5 +1,6 @@
 (ns server-ws.noria
-  (:require [clojure.spec.alpha :as s]))
+  (:require [clojure.spec.alpha :as s])
+  (:import [noria LCS]))
 
 (s/def ::element-type (s/or :primitive keyword? :user fn?))
 (s/def ::props (s/map-of keyword? any?))
@@ -11,18 +12,20 @@
 (s/def ::node any?)
 (s/def :component/node ::node)
 
-(s/def :component/subst ::component)
+(s/def ::primitive-component (s/keys :req [:component/node
+                                           :component/element
+                                           :component/children]))
 
 (s/def ::user-component (s/keys :req [:component/node
                                       :component/element
                                       :component/subst]))
 
-(s/def :component/children (s/coll-of ::component))
-(s/def ::primitive-component (s/keys :req [:component/node
-                                           :component/element
-                                           :component/children]))
-
 (s/def ::component (s/or ::user-compomnent ::primitive-component))
+(s/def :component/subst ::component)
+
+
+
+(s/def :component/children (s/coll-of ::component))
 
 (defmulti update-spec :update/type)
 (s/def ::update (s/multi-spec update-spec :update/type))
@@ -55,19 +58,6 @@
                                               :add/child]))
 
 
-(defn longest [xs ys] (if (> (count xs) (count ys)) xs ys))
-
-(defn lcs [a b]
-  (let [impl* (atom nil)
-        impl (memoize
-              (fn [[x & xs] [y & ys]]
-                (cond
-                  (or (= x nil) (= y nil) ) nil
-                  (= x y) (cons x (@impl* xs ys))
-                  :else (longest (@impl* (cons x xs) ys) (@impl* xs (cons y ys))))))]
-    (reset! impl* impl)
-    (impl a b)))
-
 (defn- get-props* [[_ props]]
   (if (map? props) props nil))
 
@@ -77,13 +67,16 @@
                    (some? props) (cons props r)
                    :else r)]
     (persistent! (second (reduce (fn [[indices res] e]
-                                   (if-let [key (or (:key (get-props* e)) (:key (meta e)))]
-                                     [indices (conj! res {:elt e :key key})]
-                                     (let [type (first e)
-                                           indices' (update indices type (fn [i] (if i (inc i) 0)))
-                                           idx (indices' type)]
-                                       [indices' (conj! res {:elt e :key [type idx]})])))
-                                 [{} (transient [])] children)))))
+                                   (if (some? e)
+                                     (if-let [key (or (:key (get-props* e)) (:key (meta e)))]
+                                       [indices (conj! res {:elt e :key key})]
+                                       (let [type (first e)
+                                             indices' (update indices type (fn [i] (if i (inc i) 0)))
+                                             idx (indices' type)]
+                                         [indices' (conj! res {:elt e :key [type idx]})]))
+                                     [indices res]))
+                                 [{} (transient [])]
+                                 children)))))
 
 (defn get-props [elt-with-key]
   (get-props* (:elt elt-with-key)))
@@ -147,7 +140,7 @@
   (let [old-keys (map (comp :key :component/element) c-children)
         new-keys (map :key new-children)]
     (if (not= old-keys new-keys)
-      (let [common (into #{} (lcs old-keys new-keys))
+      (let [common (into #{} (LCS/lcs (into-array Object old-keys) (into-array Object new-keys)))
             key->component (into {}
                                  (map (fn [c] [(:key (:component/element c)) c]))
                                  c-children)
@@ -213,13 +206,17 @@
                        old-elt :component/element :as c} {[_ & args] :elt key :key :as elt} ctx]  
   (let [[state' subst] (binding [*sink* (atom nil)]
                          [(apply render state args)
-                          @*sink*])        
-        [new-c-subst ctx'] (reconcile c-subst {:elt subst :key key} ctx)]
-    [(assoc c
-             :component/subst new-c-subst
-             :component/state state'
-             :component/element elt
-             :component/node (:component/node new-c-subst)) ctx']))
+                          @*sink*])]
+    (if (some? subst)
+      (let [[new-c-subst ctx'] (reconcile c-subst {:elt subst :key key} ctx)]
+        [(assoc c
+                :component/subst new-c-subst
+                :component/state state'
+                :component/element elt
+                :component/node (:component/node new-c-subst)) ctx'])
+      [(assoc c
+              :component/state state'
+              :component/element elt) ctx])))
 
 (defn reconcile [c elt ctx]
   (if (user-component? elt)
@@ -251,13 +248,6 @@
    (component
     (fn [x y]
       [:div {} [:text {:text (str x y)}]]))))
-
-
-
-(let [[{c :component} next-id] (build-component {:elt [user-component 1 2]
-                                                 :key 0} 0)]
-  (reconcile c {:elt [user-component 1 3]
-                :key 0} next-id))
 
 (defn my-comp [update!]
   (fn [rf]

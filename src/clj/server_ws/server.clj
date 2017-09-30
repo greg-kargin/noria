@@ -6,7 +6,10 @@
             [manifold.bus :as bus]
             [clojure.core.async :as a]
             [server-ws.noria :as noria]
-            [clojure.data.json :as json])
+            [clojure.data.json :as json]
+            [andel.core :as andel]
+            [andel.controller :as controller]
+            [andel.noria])
   (:import [java.io ByteArrayOutputStream ByteArrayInputStream]
            [java.util Date]
            [io.netty.channel ChannelOption]))
@@ -91,34 +94,53 @@
                (swap! *counter inc)
                (update-fn))])
 
+
+(def editor-impl (slurp (clojure.java.io/file "andel/resources/public/EditorImpl.java")))
+#_(def markup
+  (->> (edn/read-string (slurp (clojure.java.io/file "andel/resources/public/markup.txt")))
+       (mapv create-marker)
+       (sort-by (fn [m] (.-from m)))))
+
+
 (defn run-event-loop [{:keys [incoming outgoing] :as endpoint}]
-  (let [callbacks (atom {})
-        *counter (atom 3)
+  (let [*editor (atom (-> (andel/make-editor-state)
+                          (assoc-in  [:viewport :metrics] {:width 9.6
+                                                           :height 16
+                                                           :spacing 3})
+                          (assoc-in [:viewport :view-size] [800 600])
+                          (andel/insert-at-offset 0 editor-impl)
+                          (dissoc :log)))
+        elt (fn [editor update!]
+              {:elt [andel.noria/editor-component
+                     editor
+                     {:on-scroll (fn [dx dy]
+                                   (swap! *editor controller/scroll dx dy)
+                                   (update!))}]
+               :key 0})
+        callbacks (atom {})
         *c (atom nil)
         *next-id (atom 0)
         update! (fn update! []
-                  (let [[c' ctx] (noria/reconcile @*c {:elt (into
-                                                             [:div
-                                                              (gen-elems @*counter update! *counter)])
-                                                       :key 0} {:next-id @*next-id
-                                                       :updates (transient [])})]
+                  (let [[c' ctx] (noria/reconcile @*c (elt @*editor update!)
+                                                  {:next-id @*next-id
+                                                   :updates (transient [])})]
                     (reset! *c c')
                     (reset! *next-id (:next-id ctx))
                     (perform-updates! callbacks outgoing (persistent! (:updates ctx)))))
-        [c ctx] (noria/build-component
-                                {:elt (into
-                                       [:div
-                                        (gen-elems @*counter update! *counter)])
-                                 :key 0} {:next-id @*next-id
-                                          :updates (transient [])})]
+        [c ctx] (noria/build-component (elt @*editor update!)
+                                       {:next-id @*next-id
+                                        :updates (transient [])})]
     (reset! *c c)
     (reset! *next-id (:next-id ctx))
     (perform-updates! callbacks outgoing (persistent! (:updates ctx)))
     (a/go (loop []
             (when-let [{:strs [node key arguments] :as msg} (a/<! incoming)]
               (prn msg)
+              (def cbcb @callbacks)
               (when-let [cb (get @callbacks [(keyword key) node])]                
-                (apply cb arguments))
+                (try  (apply cb arguments)
+                      (catch Exception e
+                        (prn e))))
               (recur))))))
 
 (defn connect-handler [req]
@@ -142,23 +164,32 @@
    (start-server)))
 
 
-(comment 
+(comment
 
-  (json/write-str {:update/type :make-node
-                   } )
-  (json/json-str )
+  (def ed (-> (andel/make-editor-state)
+              (assoc-in  [:viewport :metrics] {:width 9.6
+                                               :height 16
+                                               :spacing 3})
+              (assoc-in [:viewport :view-size] [800 600])
+              (andel/insert-at-offset 0 editor-impl)
+              (dissoc :log)))
 
-  (str :a/b)
-  (.setOption server "tcpNoDelay" true)
+
+  
+
+  (noria/build-component
+   {:elt [andel.noria/editor-component
+          ed
+          {:on-scroll (fn [dx dy]
+                        )}]
+    :key 0}
+   
+   {:next-id 0
+    :updates (transient [])})
+  
 
   (def server (start-server))
   (.close server)
 
-  (def client @(http/websocket-client "ws://localhost:8000"))
-
-  (stream/put! client
-          "42")
-
-  (stream/take! client)
 
 )
