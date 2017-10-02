@@ -9,6 +9,7 @@
             [clojure.data.json :as json]
             [andel.core :as andel]
             [andel.controller :as controller]
+            [andel.intervals :as intervals]
             [andel.noria])
   (:import [java.io ByteArrayOutputStream ByteArrayInputStream]
            [java.util Date]
@@ -34,6 +35,43 @@
 (defn make-endpoint []
   {:incoming (a/chan bufsize)
    :outgoing (a/chan bufsize)})
+
+(defonce styles (atom {}))
+
+(defn style->class [style]
+  (let [name (str "style__" (hash style))]
+    (when-not (contains? @styles name)
+      (swap! styles assoc (str "." name) style))
+    name))
+
+(defonce next-marker-id (atom 0))
+
+(defn- create-marker [{:keys [from to greedy-left? greedy-right? style]}]
+  (letfn [(classes-by-keys [ks styles]
+                           (let [classes (->> styles
+                                              (map (fn [style]
+                                                     (let [style (select-keys style ks)]
+                                                       (when (not-empty style)
+                                                         (style->class style)))) )
+                                              (filter some?))]
+                             (when (not-empty classes)
+                               (->> classes
+                                    (interpose " ")
+                                    (apply str)))))]
+    (intervals/->Marker from to greedy-left? greedy-right? (intervals/->Attrs (swap! next-marker-id inc)
+                                                                              (classes-by-keys
+                                                                                [:background-color
+                                                                                 :border-bottom-style
+                                                                                 :border-color
+                                                                                 :border-width
+                                                                                 :border-radius]
+                                                                                style)
+                                                                              (classes-by-keys
+                                                                                [:color
+                                                                                 :font-weight
+                                                                                 :font-style]
+                                                                                style)
+                                                                              nil))))
 
 (defn props-diff! [callbacks node old-props new-props]
   (let [old-props' (into {}
@@ -96,11 +134,10 @@
 
 
 (def editor-impl (slurp (clojure.java.io/file "andel/resources/public/EditorImpl.java")))
-#_(def markup
-  (->> (edn/read-string (slurp (clojure.java.io/file "andel/resources/public/markup.txt")))
+(def markup
+  (->> (read-string (slurp (clojure.java.io/file "andel/resources/public/markup.txt")))
        (mapv create-marker)
        (sort-by (fn [m] (.-from m)))))
-
 
 (defn run-event-loop [{:keys [incoming outgoing] :as endpoint}]
   (let [*editor (atom (-> (andel/make-editor-state)
@@ -109,13 +146,15 @@
                                                            :spacing 3})
                           (assoc-in [:viewport :view-size] [800 600])
                           (andel/insert-at-offset 0 editor-impl)
+                          (andel/insert-markers markup)
                           (dissoc :log)))
         elt (fn [editor update!]
               {:elt [andel.noria/editor-component
                      editor
                      {:on-scroll (fn [dx dy]
                                    (swap! *editor controller/scroll dx dy)
-                                   (update!))}]
+                                   (update!))}
+                     @styles]
                :key 0})
         callbacks (atom {})
         *c (atom nil)

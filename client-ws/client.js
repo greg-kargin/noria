@@ -187,6 +187,24 @@ registerComponent("text", function (props) {
     }
 })
 
+registerComponent("style", function(props) {
+    var e = document.createElement("style");
+    e.innerHTML = props.name + "{" + props.style + "}";
+    return {
+        domNode : e,
+        updateProps : function (diffProps) {
+            throw new Error("style updates are not supported");
+        },
+        addChild: function(child, index){
+            throw new Error("style does not support children");
+        },
+        removeChild: function(child, index){
+            throw new Error("style does not support children");
+        },
+        destroy: function (){}
+    }
+})
+
 registerComponent("raw-line", function (props) {
     var callbacks = {};
 
@@ -231,7 +249,7 @@ registerComponent("raw-line", function (props) {
             var sClass = fgMarkup[i + 1];
             var span = document.createElement("span");
             if (sClass) {
-                span.classList.add(sClass);
+                span.setAttribute("class", sClass);
             }
             span.textContent = text.substring(col, col + len);
             fgDiv.appendChild(span);
