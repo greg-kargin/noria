@@ -109,71 +109,80 @@ function insertChildAtIndex(parent, child, index) {
 
 function tag(t) {
     return function (props) {
-    var callbacks = {};
-    var e = document.createElement(t);
+        var callbacks = {};
+        var e = document.createElement(t);
+        
+        var table = {"on-click" : {event: "click",
+                                   handler: function (evt, cb) {
+                                       cb();
+                                       evt.stopPropagation();}},
+                     "on-focus" : {event: "focus",
+                                   handler: function (evt, cb) {
+                                       cb();
+                                       evt.stopPropagation();
+                                   }},
+                     "on-wheel" : {event: "wheel",
+                                   handler: function (evt, cb) {
+                                       cb(evt.deltaX, evt.deltaY)
+                                       evt.preventDefault();}},
+                     "on-mouse-down" : {event : "mousedown",
+                                        handler : function (evt, cb) {
+                                            var offsetHost = evt.currentTarget.offsetParent || evt.currentTarget;
+                                            var x = evt.clientX - offsetHost.offsetLeft;
+                                            var y = evt.clientY - offsetHost.offsetTop;
+                                            cb(x, y);
+                                            evt.stopPropagation();
+                                            evt.preventDefault();
+                                        }}}
+        var createCallback = function (handler, p) {
+            return function (evt) {
+                handler(evt, p);
+            }
+        };
 
-    var table = {"on-click" : {event: "click",
-                               handler: function (evt, cb) {
-                                   cb();
-                                   evt.stopPropagation();}},
-                 "on-wheel" : {event: "wheel",
-                               handler: function (evt, cb) {
-                                   cb(evt.deltaX, evt.deltaY)
-                                   evt.preventDefault();}},
-                 "on-mouse-down" : {event : "mousedown",
-                                    handler : function (evt, cb) {
-                                        var offsetHost = evt.currentTarget.offsetParent || evt.currentTarget;
-                                        var x = evt.clientX - offsetHost.offsetLeft;
-                                        var y = evt.clientY - offsetHost.offsetTop;
-                                        cb(x, y);
-                                        evt.stopPropagation();
-                                        evt.preventDefault();
-                                    }}}
-    var createCallback = function (handler, p) {
-        return function (evt) {
-            handler(evt, p);
-        }
-    }
-    var setProps = function (diffProps) {
-        for (var key in diffProps) {
-            var p = diffProps[key];
-            var entry = table[key];
-            if (entry != null) {
-                var event = entry.event;
-                var handler = entry.handler;
-                if (p == "-noria-handler") {
-                    e.removeEventListener(event, callbacks[event]);
-                    delete callbacks [event];
+        var setProps = function (diffProps) {
+            for (var key in diffProps) {
+                var p = diffProps[key];
+                var entry = table[key];
+                if (entry != null) {
+                    var event = entry.event;
+                    var handler = entry.handler;
+                    if (p == "-noria-handler") {
+                        e.removeEventListener(event, callbacks[event]);
+                        delete callbacks [event];
+                    } else {
+                        var cb = createCallback(handler, p);
+                        e.addEventListener(event, cb);
+                        callbacks[event] = cb;
+                    }
+                } else if (key == "focused?") {
+                    if (p == true) {
+                        setTimeout(function(){ e.focus();}, 0);
+                    }
                 } else {
-                    var cb = createCallback(handler, p);
-                    e.addEventListener(event, cb);
-                    callbacks[event] = cb;
-                }
-            } else {
-                if (p == null) {
-                    e.removeAttribute(key);
-                } else {
-//                    console.log("setAttribute:", e, key, p);
-                    e.setAttribute(key, p);
+                    if (p == null) {
+                        e.removeAttribute(key);
+                    } else {
+                        e.setAttribute(key, p);
+                    }
                 }
             }
+        };
+        
+        setProps(props);
+
+        return {
+            domNode: e,
+            updateProps: setProps,
+            addChild: function (child, index) {
+                insertChildAtIndex(e, child.domNode, index);
+            },
+            removeChild: function(child) {
+                e.removeChild(child.domNode);
+            },
+            destroy: function() {},
         }
-    };
-    
-    setProps(props);
-    
-    return {
-        domNode: e,
-        updateProps: setProps,
-        addChild: function (child, index) {
-            insertChildAtIndex(e, child.domNode, index);
-        },
-        removeChild: function(child) {
-            e.removeChild(child.domNode);
-        },
-        destroy: function() {}
     }
-  }
 }
 
 registerComponent("div", tag("div"))
@@ -213,6 +222,32 @@ registerComponent("style", function(props) {
         destroy: function (){}
     }
 })
+
+registerComponent("hidden-text-area", function (props) {
+    var onInput = props["on-input"];
+    delete props["on-input"];
+    var t = tag("textarea")(props);
+    var cb = function (evt) {
+        var v = evt.target.value;        
+        evt.target.value = "";
+        onInput(v);
+    };
+    t.domNode.addEventListener("input", cb);
+    t.domNode.setAttribute("style", "opacity: 0; padding: 0px; border: none; height: 0px; width: 0px;");
+    return {
+        domNode : t.domNode,
+        updateProps : function (props){
+            delete props["on-input"];
+            t.updateProps(props);
+        },
+        addChild: function(child, index){
+            throw new Error("style does not support children");
+        },
+        removeChild: function(child, index){
+            throw new Error("style does not support children");
+        },
+        destroy: function (){}
+    }})
 
 registerComponent("raw-line", function (props) {
     var callbacks = {};
@@ -282,13 +317,19 @@ registerComponent("raw-line", function (props) {
 
     var c = document.createElement("div");
     var e =  create(props);
-    c.appendChild(e);    
+    c.appendChild(e);
+
+    var p = props;
 
     return {
         domNode: c,
 
         updateProps: function (props) {
-            newE = create(props);           
+            p = {metrics : props.metrics || p.metrics,
+                 "fg-markup" : props["fg-markup"] || p["fg-markup"],
+                 "bg-markup" : props["bg-markup"] || p["bg-markup"],
+                 text : props["text"] == null ? p["text"] : props["text"]};
+            newE = create(p);
             c.replaceChild(newE, e);
             e = newE;
         },
@@ -304,3 +345,6 @@ registerComponent("raw-line", function (props) {
         destroy: function() {}
     }
 })
+
+
+runClient();

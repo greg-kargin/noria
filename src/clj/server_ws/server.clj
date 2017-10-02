@@ -144,6 +144,7 @@
                           (assoc-in  [:viewport :metrics] {:width 9.6
                                                            :height 16
                                                            :spacing 3})
+                          (assoc-in [:viewport :focused?] true)
                           (assoc-in [:viewport :view-size] [800 600])
                           (andel/insert-at-offset 0 editor-impl)
                           (andel/insert-markers markup)
@@ -159,7 +160,10 @@
                                                         (let [viewport (:viewport state)
                                                               line-col (andel.utils/pixels->grid-position [x y] viewport)]
                                                           (controller/set-caret-at-grid-pos state line-col false))))
-                                       (update!))}
+                                       (update!))
+                      :on-input (fn [input]
+                                  (swap! *editor controller/type-in input)
+                                  (update!))}
                      @styles]
                :key 0})
         callbacks (atom {})
@@ -237,4 +241,6 @@
   (.close server)
 
 
+  
+  
 )
