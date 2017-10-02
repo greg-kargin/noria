@@ -119,7 +119,16 @@ function tag(t) {
                  "on-wheel" : {event: "wheel",
                                handler: function (evt, cb) {
                                    cb(evt.deltaX, evt.deltaY)
-                                   evt.preventDefault();}}}
+                                   evt.preventDefault();}},
+                 "on-mouse-down" : {event : "mousedown",
+                                    handler : function (evt, cb) {
+                                        var offsetHost = evt.currentTarget.offsetParent || evt.currentTarget;
+                                        var x = evt.clientX - offsetHost.offsetLeft;
+                                        var y = evt.clientY - offsetHost.offsetTop;
+                                        cb(x, y);
+                                        evt.stopPropagation();
+                                        evt.preventDefault();
+                                    }}}
     var createCallback = function (handler, p) {
         return function (evt) {
             handler(evt, p);

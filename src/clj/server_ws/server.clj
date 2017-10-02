@@ -153,7 +153,13 @@
                      editor
                      {:on-scroll (fn [dx dy]
                                    (swap! *editor controller/scroll dx dy)
-                                   (update!))}
+                                   (update!))
+                      :on-mouse-down (fn [x y]
+                                       (swap! *editor (fn [state]
+                                                        (let [viewport (:viewport state)
+                                                              line-col (andel.utils/pixels->grid-position [x y] viewport)]
+                                                          (controller/set-caret-at-grid-pos state line-col false))))
+                                       (update!))}
                      @styles]
                :key 0})
         callbacks (atom {})
