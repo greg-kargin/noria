@@ -118,21 +118,6 @@
                       (empty? (:update-props/props-diff u)))))
        (a/put! outgoing)))
 
-(def my-comp (noria/component (fn [n click]
-                                (if (< 0 n)
-                                  [:div
-                                   [:text {:text (str n)}]
-                                   [my-comp (dec n) click]
-                                   [my-comp (dec n) click]]
-                                  [:div {:on-click click}
-                                   [:text {:text (str n)}]]))))
-
-(defn gen-elems [n update-fn *counter]
-  [my-comp n (fn []
-               (swap! *counter inc)
-               (update-fn))])
-
-
 (def editor-impl (slurp (clojure.java.io/file "andel/resources/public/EditorImpl.java")))
 (def markup
   (->> (read-string (slurp (clojure.java.io/file "andel/resources/public/markup.txt")))
@@ -140,17 +125,27 @@
        (sort-by (fn [m] (.-from m)))))
 
 (defn run-event-loop [{:keys [incoming outgoing] :as endpoint}]
-  (let [*editor (atom (-> (andel/make-editor-state)
-                          (assoc-in  [:viewport :metrics] {:width 9.6
-                                                           :height 16
-                                                           :spacing 3})
-                          (assoc-in [:viewport :focused?] true)
-                          (assoc-in [:viewport :view-size] [800 600])
-                          (andel/insert-at-offset 0 editor-impl)
-                          (andel/insert-markers markup)
-                          (dissoc :log)))
+  (let [*editor (atom 0) #_(atom (-> (andel/make-editor-state)
+                               (assoc-in  [:viewport :metrics] {:width 9.6
+                                                                :height 16
+                                                                :spacing 3})
+                               (assoc-in [:viewport :focused?] true)
+                               (assoc-in [:viewport :view-size] [800 600])
+                               (andel/insert-at-offset 0 editor-impl)
+                               (andel/insert-markers markup)
+                               (dissoc :log)))
+        height 1000
         elt (fn [editor update!]
-              {:elt [andel.noria/editor-component
+              {:elt [andel.noria/rainbow ;; bad, should recieve map?
+                     editor
+                     height
+                     (fn [dx dy]
+                       (swap! *editor (fn [top] (-> top
+                                                    (+ dy)
+                                                    (max 0)
+                                                    #_(min height))))
+                       (update!))]
+               #_[andel.noria/editor-component
                      editor
                      {:on-scroll (fn [dx dy]
                                    (swap! *editor controller/scroll dx dy)
@@ -186,7 +181,7 @@
             (when-let [{:strs [node key arguments] :as msg} (a/<! incoming)]
               (prn msg)
               (def cbcb @callbacks)
-              (when-let [cb (get @callbacks [(keyword key) node])]                
+              (when-let [cb (get @callbacks [(keyword key) node])]
                 (try  (apply cb arguments)
                       (catch Exception e
                         (prn e))))
@@ -224,23 +219,21 @@
               (dissoc :log)))
 
 
-  
+
 
   (noria/build-component
    {:elt [andel.noria/editor-component
           ed
           {:on-scroll (fn [dx dy]
-                        )}]
+                        )}
+          nil]
     :key 0}
-   
    {:next-id 0
     :updates (transient [])})
-  
+
 
   (def server (start-server))
   (.close server)
 
 
-  
-  
 )

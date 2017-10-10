@@ -144,7 +144,7 @@
             key->component (into {}
                                  (map (fn [c] [(:key (:component/element c)) c]))
                                  c-children)
-            
+
             new-keys-set (into #{} new-keys)
             ctx-with-removes (update ctx :updates
                                      (fn [updates]
@@ -176,7 +176,7 @@
                                                  :add/child child-node
                                                  :add/parent c-node})))
                               conj! updates children-reconciled)))])
-      
+
       (map-children (fn [[child-c child-e] ctx]
                       (reconcile child-c child-e ctx))
                     ctx
@@ -203,7 +203,7 @@
 (defn reconcile-user [{c-subst :component/subst
                        render :component/render
                        state :component/state
-                       old-elt :component/element :as c} {[_ & args] :elt key :key :as elt} ctx]  
+                       old-elt :component/element :as c} {[_ & args] :elt key :key :as elt} ctx]
   (let [[state' subst] (binding [*sink* (atom nil)]
                          [(apply render state args)
                           @*sink*])]
