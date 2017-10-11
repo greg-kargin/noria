@@ -272,6 +272,7 @@ registerComponent("key-listener", function (props) {
             evt.stopPropagation();
             evt.preventDefault();
             content();
+            state["keymap"] = initialKeymap;
         } else if (typeof(content) == "object") {
             evt.stopPropagation();
             evt.preventDefault();
