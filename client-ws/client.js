@@ -223,6 +223,78 @@ registerComponent("style", function(props) {
     }
 })
 
+registerComponent("key-listener", function (props) {
+
+    function keydownEvtToChord(evt) {
+        var chord = "";
+
+        if (evt.altKey) chord += "M-";
+        if (evt.ctrlKey) chord += "C-";
+//        if (evt.shiftKey) chord += "S-";
+        if (evt.metaKey) chord += "s-";
+
+        chord += evt.key;
+
+        return chord;
+    }
+
+    function buildKeymap(props) {
+        keymap = {};
+
+        for (var binding in props) {
+            chord = binding.split(" ");
+            keymap_ = keymap;
+            for (var key in chord) {
+                if (key == chord.length - 1) {
+                    keymap_[chord[key]] = props[binding];
+                } else {
+                    keymap_[chord[key]] = {};
+                    keymap_ = keymap_[chord[key]];
+                }
+            }
+        }
+        return keymap;
+    }
+
+    var t = tag("key-listener")();
+
+    var initialKeymap = buildKeymap(props);
+    var state = {keymap : initialKeymap};
+
+    var cb = function (evt) {
+        var chord = keydownEvtToChord(evt);
+        var keymap = state["keymap"];
+        var content = keymap[chord];
+
+        if (content == undefined) {
+            state["keymap"] = initialKeymap;
+        } else if (typeof(content) == "function") {
+            evt.stopPropagation();
+            evt.preventDefault();
+            content();
+        } else if (typeof(content) == "object") {
+            evt.stopPropagation();
+            evt.preventDefault();
+            state["keymap"] = content;
+        }
+    };
+
+    document.addEventListener("keydown", cb);
+    return {
+        domNode : t.domNode,
+        updateProps : function (diffProps) {
+            throw new Error("key-listener updates are not supported");
+        },
+        addChild: function(child, index){
+            throw new Error("key-listener does not support children");
+        },
+        removeChild: function(child, index){
+            throw new Error("key-listener does not support children");
+        },
+        destroy: function (){}
+    }
+})
+
 registerComponent("hidden-text-area", function (props) {
     var onInput = props["on-input"];
     delete props["on-input"];
@@ -316,7 +388,7 @@ registerComponent("raw-line", function (props) {
     };
 
     var c = document.createElement("div");
-    var e =  create(props);
+    var e = create(props);
     c.appendChild(e);
 
     var p = props;

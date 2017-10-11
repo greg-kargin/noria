@@ -24,9 +24,11 @@
 
 (defn encode [data]
   (json/write-str data :key-fn (fn [k]
-                                 (if (some? (namespace k))
-                                   (str (namespace k) "_" (name k))
-                                   (name k)))))
+                                 (if (string? k)
+                                   k
+                                   (if (some? (namespace k))
+                                     (str (namespace k) "_" (name k))
+                                     (name k))))))
 
 (defn decode [data]
   (json/read-str data))
