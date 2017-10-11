@@ -6,5 +6,5 @@
                  [org.clojure/data.json "0.2.6"]
                  [com.cognitect/transit-clj "0.8.300"]]
   :main server-ws.server
-  :source-paths ["src/clj" "andel/src/cljc"]
+  :source-paths ["src/clj" "andel/src/cljc" "noria_clj/src/clj"]
   :java-source-paths ["src/java"])

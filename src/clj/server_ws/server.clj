@@ -5,12 +5,12 @@
             [manifold.deferred :as d]
             [manifold.bus :as bus]
             [clojure.core.async :as a]
-            [server-ws.noria :as noria]
+            [noria.noria :as noria]
             [clojure.data.json :as json]
             [andel.core :as andel]
             [andel.controller :as controller]
             [andel.intervals :as intervals]
-            [andel.noria])
+            [andel.noria-components])
   (:import [java.io ByteArrayOutputStream ByteArrayInputStream]
            [java.util Date]
            [io.netty.channel ChannelOption]))
@@ -103,19 +103,19 @@
 
 (defn perform-updates! [callbacks outgoing u]
   (->> u
-       (map (fn [{type :update/type :as u}]
+       (map (fn [{type :noria/update-type :as u}]
               (cond (= :make-node type)
-                    (let [{:make-node/keys [node props]} u]
-                      (assoc u :make-node/props (props-diff! callbacks node nil props)))
+                    (let [{:noria/keys [node props]} u]
+                      (assoc u :noria/props (props-diff! callbacks node nil props)))
                     (= :update-props type)
-                    (let [{:update-props/keys [node old-props new-props]} u]
+                    (let [{:noria/keys [node old-props new-props]} u]
                       (-> u
-                          (assoc :update-props/props-diff (props-diff! callbacks node old-props new-props))
-                          (dissoc :update-props/old-props :update-props/new-props)))
+                          (assoc :noria/props-diff (props-diff! callbacks node old-props new-props))
+                          (dissoc :noria/old-props :noria/new-props)))
                     :else u)))
        (remove (fn [u]
-                 (and (= (:update/type u) :update-props)
-                      (empty? (:update-props/props-diff u)))))
+                 (and (= (:noria/update-type u) :update-props)
+                      (empty? (:noria/props-diff u)))))
        (a/put! outgoing)))
 
 (def editor-impl (slurp (clojure.java.io/file "andel/resources/public/EditorImpl.java")))
@@ -125,27 +125,24 @@
        (sort-by (fn [m] (.-from m)))))
 
 (defn run-event-loop [{:keys [incoming outgoing] :as endpoint}]
-  (let [*editor (atom 0) #_(atom (-> (andel/make-editor-state)
-                               (assoc-in  [:viewport :metrics] {:width 9.6
-                                                                :height 16
-                                                                :spacing 3})
-                               (assoc-in [:viewport :focused?] true)
-                               (assoc-in [:viewport :view-size] [800 600])
-                               (andel/insert-at-offset 0 editor-impl)
-                               (andel/insert-markers markup)
-                               (dissoc :log)))
-        height 1000
+  (let [*editor #_(atom [0 0 0]) (atom (-> (andel/make-editor-state)
+                                        (assoc-in  [:viewport :metrics] {:width 9.6
+                                                                         :height 16
+                                                                         :spacing 3})
+                                        (assoc-in [:viewport :focused?] true)
+                                        (assoc-in [:viewport :view-size] [800 600])
+                                        (andel/insert-at-offset 0 editor-impl)
+                                        (andel/insert-markers markup)
+                                        (dissoc :log)))
+        height [0 1000 0]
         elt (fn [editor update!]
-              {:elt [andel.noria/rainbow ;; bad, should recieve map?
+              {:elt #_[andel.noria-components/rainbow
                      editor
                      height
                      (fn [dx dy]
-                       (swap! *editor (fn [top] (-> top
-                                                    (+ dy)
-                                                    (max 0)
-                                                    #_(min height))))
+                       (swap! *editor (fn [[x y z]] [x (max 0 (+ y dy)) z]))
                        (update!))]
-               #_[andel.noria/editor-component
+               [andel.noria-components/editor-component-
                      editor
                      {:on-scroll (fn [dx dy]
                                    (swap! *editor controller/scroll dx dy)
@@ -166,12 +163,14 @@
         *next-id (atom 0)
         update! (fn update! []
                   (let [[c' ctx] (noria/reconcile @*c (elt @*editor update!)
+                                                  conj!
                                                   {:next-id @*next-id
                                                    :updates (transient [])})]
                     (reset! *c c')
                     (reset! *next-id (:next-id ctx))
                     (perform-updates! callbacks outgoing (persistent! (:updates ctx)))))
         [c ctx] (noria/build-component (elt @*editor update!)
+                                       conj!
                                        {:next-id @*next-id
                                         :updates (transient [])})]
     (reset! *c c)

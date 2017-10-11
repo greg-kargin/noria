@@ -34,15 +34,15 @@ function runClient() {
         for (var i = 0; i < updates.length; i++) {
             var e = updates[i];
             //console.log(e);
-            var updateType = e["update_type"];
+            var updateType = e["noria_update-type"];
             if (updateType == "make-node") {
-                var type = e["make-node_type"];
+                var type = e["noria_node-type"];
                 var constr = classes[type];
                 if (constr == null) {
                     console.error("no construnctor defined for type " + type);
                 } else {
-                    var node = e["make-node_node"];
-                    var props = preprocessProps(ws, node, e["make-node_props"]);
+                    var node = e["noria_node"];
+                    var props = preprocessProps(ws, node, e["noria_props"]);
                     var component = constr(props);
                     components[node] = component;
                     if (node == 0) {
@@ -50,8 +50,8 @@ function runClient() {
                     }
                 }
             } else if (updateType == "update-props") {
-                var node = e["update-props_node"];
-                var diff = preprocessProps(ws, node, e["update-props_props-diff"]);
+                var node = e["noria_node"];
+                var diff = preprocessProps(ws, node, e["noria_props-diff"]);
                 var c = components[node];
 //                console.log("update-props: " , diff ,  "node:",  node);
                 if (c == null) {
@@ -60,7 +60,7 @@ function runClient() {
                     c.updateProps(diff);
                 }
             } else if (updateType == "remove") {
-                var node = e["remove_node"];
+                var node = e["noria_node"];
                 var c = components[node];
                 if (c == null) {
                     console.error("component not found for remove-child: " + e);
@@ -68,7 +68,7 @@ function runClient() {
                     c.parent.removeChild(c);
                 }
             } else if (updateType == "destroy") {
-                var node = e["destroy_node"];
+                var node = e["noria_node"];
                 var c = components[node];
                 if (c == null) {
                     console.error("component not found for destroy: " + e);
@@ -77,9 +77,9 @@ function runClient() {
                     delete components[node];
                 }
             } else if (updateType == "add") {
-                var index = e["add_index"];
-                var childNode = e["add_child"];
-                var parentNode = e["add_parent"];
+                var index = e["noria_index"];
+                var childNode = e["noria_child-node"];
+                var parentNode = e["noria_parent-node"];
                 var parent = components[parentNode]
                 var child = components[childNode]
                 if (parent == null) {
@@ -91,7 +91,7 @@ function runClient() {
                 if (parent != null && child != null) {
                     parent.addChild(child, index);
                     child.parent = parent;
-                }            
+                }
             }
         }
     }
@@ -111,7 +111,7 @@ function tag(t) {
     return function (props) {
         var callbacks = {};
         var e = document.createElement(t);
-        
+
         var table = {"on-click" : {event: "click",
                                    handler: function (evt, cb) {
                                        cb();
@@ -168,7 +168,7 @@ function tag(t) {
                 }
             }
         };
-        
+
         setProps(props);
 
         return {
@@ -199,7 +199,7 @@ registerComponent("text", function (props) {
             console.error("addChild to text node e: " + e + " child: " + child);
         },
         removeChild: function(child) {
-            console.error("removeChild from text node e: " + e + " child: " + child);            
+            console.error("removeChild from text node e: " + e + " child: " + child);
         },
         destroy: function() {}
     }
@@ -228,7 +228,7 @@ registerComponent("hidden-text-area", function (props) {
     delete props["on-input"];
     var t = tag("textarea")(props);
     var cb = function (evt) {
-        var v = evt.target.value;        
+        var v = evt.target.value;
         evt.target.value = "";
         onInput(v);
     };

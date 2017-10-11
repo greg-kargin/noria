@@ -2,3 +2,8 @@
 	path = andel
 	url = git@github.com:JetBrains/andel.git
 	branch = api-changes
+
+[submodule "noria_clj"]
+    path = noria_clj
+    url = git@github.com:JetBrains/noria-clj.git
+    branch = master
